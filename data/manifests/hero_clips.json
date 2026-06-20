@@ -1,0 +1,10 @@
+[
+  {
+    "clip_id": "mot17_02_real",
+    "video_path": "data/raw/mot17/ablation/MOT17-02-FRCNN",
+    "source": "MOT17",
+    "description": "Real pedestrians in public square — MOTChallenge benchmark",
+    "demo_video": "results/demo_videos/LUMEN_REAL_MOT17-02.mp4",
+    "build_command": "python scripts/build_real_demo.py --num-frames 250 --start-frame 30 --fps 15"
+  }
+]

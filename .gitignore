@@ -1,0 +1,135 @@
+# =============================================================================
+# PERSIST-AI — Git ignore (safe defaults for GitHub)
+# =============================================================================
+
+# --- Python ---
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+.installed.cfg
+*.egg
+pip-log.txt
+pip-delete-this-directory.txt
+*.manifest
+*.spec
+
+# --- Test / lint / type check caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# --- Environment & secrets ---
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+credentials.json
+secrets/
+
+# --- Data (large / downloadable — keep manifests) ---
+data/raw/
+data/processed/
+data/cache/
+data/**/*.mp4
+data/**/*.avi
+data/**/*.mov
+data/**/*.mkv
+data/**/*.webm
+data/**/.cache/
+
+# Track small manifest files only
+!data/manifests/
+!data/manifests/**
+
+# --- Model weights & detection caches ---
+*.pt
+*.pth
+*.onnx
+*.engine
+*.weights
+*.npz
+*.h5
+*.ckpt
+*.safetensors
+runs/
+wandb/
+mlruns/
+tensorboard/
+
+# --- Generated outputs ---
+results/
+outputs/
+logs/
+*.log
+debug-*.log
+
+# --- Demo / debug artifacts ---
+results/debug_frames/
+assets/demo_gifs/*.mp4
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# --- OS ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# --- Editors / IDEs ---
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# --- Cursor (local agent / debug) ---
+.cursor/
+*.cursor-*
+
+# --- Ultralytics / YOLO auto-downloads ---
+ultralytics/
+yolov8*.pt
+yolov8*.yaml
+
+# --- Hugging Face cache (often under data/raw after downloads) ---
+**/.cache/huggingface/
+
+# --- Windows ---
+*.lnk
+
+# --- Keep configs tracked ---
+!configs/
+!configs/**

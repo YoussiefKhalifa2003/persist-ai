@@ -1,0 +1,26 @@
+device: cuda:0
+detector:
+  model: yolov8m.pt
+  imgsz: 1280
+  conf: 0.25
+  iou: 0.45
+  classes: [0, 2, 5, 7]
+  half: true
+tracker:
+  primary: bytetrack
+  secondary: botsort
+  reid_weights: osnet_x0_25_msmt17.pt
+lumen:
+  latent_enter_frames: 2
+  latent_max_frames: 45
+  confidence_decay_lambda: 0.05
+  min_confidence: 0.15
+  exit_zone_margin_px: 25
+  reid_cosine_threshold: 0.45
+  motion_gate_sigma: 3.0
+  pedestrian_only: true
+fps_assumed: 30
+seed: 42
+paths:
+  data_root: data
+  results_root: results

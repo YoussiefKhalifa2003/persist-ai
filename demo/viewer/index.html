@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PERSIST-AI — Street Demo Viewer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>PERSIST-AI Street Demo</h1>
+    <p class="tagline">Detection = visible. PERSIST-AI = what still exists.</p>
+  </header>
+
+  <main id="app">
+    <section id="phase-raw" class="phase active">
+      <div class="video-wrap">
+        <video id="raw-video" playsinline muted></video>
+        <button id="activate-btn" type="button">Activate PERSIST-AI</button>
+      </div>
+      <p class="caption">Standard perception — raw YOLO detects everything in frame.</p>
+    </section>
+
+    <section id="phase-split" class="phase hidden">
+      <div class="split-labels">
+        <span class="persist-label">PERSIST-AI</span>
+        <span class="raw-label">RAW DETECTION</span>
+      </div>
+      <div class="video-wrap split">
+        <video id="split-video" playsinline controls></video>
+      </div>
+      <p class="caption">Tan-coat woman stays TARGET through bus occlusion (left). Raw YOLO loses her (right).</p>
+      <button id="replay-btn" type="button">Replay from raw</button>
+    </section>
+  </main>
+
+  <footer>
+    <p>Assets: <code>VIDEO3_RAW_ONLY.mp4</code> + <code>VIDEO3_PERSIST_SPLIT.mp4</code></p>
+  </footer>
+  <script src="viewer.js"></script>
+</body>
+</html>

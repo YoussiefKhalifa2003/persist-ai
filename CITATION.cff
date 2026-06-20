@@ -1,0 +1,7 @@
+title: LUMEN
+version: 0.1.0
+message: "If you use LUMEN, please cite our repository."
+authors:
+  - family-names: LUMEN
+    given-names: Project
+license: MIT

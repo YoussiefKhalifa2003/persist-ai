@@ -1,0 +1,20 @@
+dataset: bdd
+split: val
+min_gap_frames: 10
+min_gap_frames_secondary: 5
+occlusion_subset_target: 200
+hero_clip_count: 5
+metrics:
+  - tcuo
+  - orr
+  - rle
+  - mota
+  - idf1
+baselines:
+  - bytetrack
+  - botsort
+  - lumen
+ablations:
+  - no_exit_zone
+  - no_reid
+  - no_decay
