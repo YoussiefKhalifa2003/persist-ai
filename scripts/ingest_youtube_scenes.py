@@ -389,6 +389,7 @@ def ingest(spec: IngestSpec, overwrite: bool, max_seconds: int | None) -> None:
     detect_video_json(spec, max_frames=max_frames, overwrite=overwrite)
     dets = load_dets(spec.detection_cache)
     clip_start, clip_end = choose_clip(dets, min(total_frames, max_frames), fps)
+    clip_end = min(clip_end, total_frames)
     candidate_frame, candidate_idx = choose_candidate(dets, clip_start, clip_end, frame_w, frame_h)
     print(f"== VIDEO{spec.number}: clip {clip_start}-{clip_end}, candidate {candidate_frame}:{candidate_idx}")
     write_preview(spec, clip_start, clip_end, fps)

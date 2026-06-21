@@ -244,7 +244,6 @@ class DemoComparisonEngine:
             self.locked_baseline_id = lock_track_ids_from_gt(
                 self._baseline_map, self.anchor_path, limit
             )
-        self._lumen = TrackManager(self.cfg)
 
     def _lock_lumen_id(
         self,

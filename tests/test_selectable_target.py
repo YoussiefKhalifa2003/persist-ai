@@ -314,3 +314,30 @@ def test_stationary_target_prediction_collapses_instead_of_drifting():
     assert clip.prediction_mode_by_frame is not None
     assert clip.prediction_mode_by_frame[12] == "stationary"
     assert max(abs(x - path[0][0]) for x, _y in path) < 1.0
+
+
+def test_crowd_pass_by_does_not_swap_to_neighbor():
+    all_dets: dict[int, list[Detection]] = {}
+    for i in range(24):
+        all_dets[i] = [_person(40 + i * 2, i), _person(130 + i * 2, i)]
+
+    clip = build_selectable_target_clip(all_dets, 0, 24, 6, 0, 320)
+    start = clip.anchor_path.get(6)
+    later = clip.anchor_path.get(18)
+    assert start is not None and later is not None
+    assert later.cx < 110
+
+
+def test_stop_then_occlude_keeps_anchor_near_stop_point():
+    all_dets: dict[int, list[Detection]] = {}
+    for i in range(10):
+        all_dets[i] = [_person(100, i)]
+    for i in range(10, 18):
+        all_dets[i] = [Detection(BBox(120, 80, 250, 210), 0.9, 2)]
+
+    clip = build_selectable_target_clip(all_dets, 0, 18, 4, 0, 320)
+    anchor_before_oc = clip.anchor_path.get(9)
+    anchor_during_oc = clip.anchor_path.get(12)
+    assert anchor_before_oc is not None
+    assert anchor_during_oc is not None
+    assert abs(anchor_during_oc.cx - anchor_before_oc.cx) < 35

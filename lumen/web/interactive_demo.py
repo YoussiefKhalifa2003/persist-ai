@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import uuid
@@ -14,7 +15,7 @@ import cv2
 
 from lumen.data.selectable_target import build_candidates, build_selectable_target_clip, class_name
 from lumen.pipelines.comparison_pipeline import DemoComparisonEngine, LumenVisualState
-from lumen.pipelines.persist_occlusion import mask_subject_windows, target_visible_enough
+from lumen.pipelines.persist_occlusion import frame_is_persist_latent, mask_subject_windows, target_visible_enough
 from lumen.types import BBox, Detection
 from lumen.utils.io import load_config, save_json
 from lumen.viz.crowd_compositor import compose_crowd_frame
@@ -23,6 +24,25 @@ from lumen.viz.silhouette import SubjectSilhouette
 
 OCCLUDER_CLASSES = {1, 2, 3, 5, 7}
 SCENE_CONFIG = Path("configs/interactive_scenes.json")
+# Avoid libavcodec pthread crashes when multiple requests share one VideoCapture.
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "threads;1")
+_DEBUG_LOG = Path("debug-6ac46f.log")
+
+
+def _dbg(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    # #region agent log
+    payload = {
+        "sessionId": "6ac46f",
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+        "runId": data.get("runId", "pre-fix"),
+    }
+    with _DEBUG_LOG.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload) + "\n")
+    # #endregion
 
 
 @dataclass
@@ -34,12 +54,221 @@ class RenderJob:
     message: str = "Queued"
     video_path: str | None = None
     manifest_path: str | None = None
+    frame_cache_dir: str | None = None
     error: str | None = None
     created_at: float = field(default_factory=time.time)
 
 
 JOBS: dict[str, RenderJob] = {}
 JOBS_LOCK = threading.Lock()
+_FRAME_CACHE_LOCK = threading.Lock()
+_FRAME_CACHES: dict[str, "SceneFrameCache"] = {}
+_JOB_FRAME_CACHE_LOCK = threading.Lock()
+_JOB_FRAME_CACHES: dict[str, "JobFrameCache"] = {}
+
+
+def video_metadata(path: Path) -> tuple[int, float, int, int]:
+    cap = cv2.VideoCapture(str(path))
+    frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 15.0)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    cap.release()
+    return frames, fps, width, height
+
+
+class SceneFrameCache:
+    """Reuse one VideoCapture per scene; sequential reads when scrubbing forward."""
+
+    def __init__(self, scene: dict[str, Any], max_cached: int = 4):
+        self.scene_id = scene["scene_id"]
+        self.source = _repo_path(scene["source_video"])
+        self.clip_start = int(scene["clip_start"])
+        self.clip_end = int(scene["clip_end"])
+        self.scale = float(scene.get("scale", 1.0))
+        self._cap: cv2.VideoCapture | None = None
+        self._last_abs = -1
+        self._max_cached = max_cached
+        self._read_lock = threading.Lock()
+
+    def _ensure_open(self) -> cv2.VideoCapture:
+        if self._cap is None or not self._cap.isOpened():
+            self._cap = cv2.VideoCapture(str(self.source))
+            self._last_abs = -1
+        return self._cap
+
+    def close(self) -> None:
+        with self._read_lock:
+            if self._cap is not None:
+                self._cap.release()
+                self._cap = None
+            self._last_abs = -1
+
+    def read(self, rel_frame: int) -> tuple[bool, Any]:
+        with self._read_lock:
+            clip_len = self.clip_end - self.clip_start
+            if rel_frame < 0 or rel_frame >= clip_len:
+                return False, None
+            abs_frame = self.clip_start + rel_frame
+            cap = self._ensure_open()
+            if self._last_abs < 0 or abs_frame < self._last_abs or abs_frame > self._last_abs + 3:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, abs_frame)
+            elif abs_frame > self._last_abs:
+                while self._last_abs < abs_frame - 1:
+                    ok, _ = cap.read()
+                    if not ok:
+                        return False, None
+                    self._last_abs += 1
+            ok, frame = cap.read()
+            if not ok:
+                return False, None
+            self._last_abs = abs_frame
+            if self.scale != 1.0:
+                frame = cv2.resize(frame, None, fx=self.scale, fy=self.scale, interpolation=cv2.INTER_AREA)
+            return True, frame
+
+    def preload(self) -> list[Any]:
+        frames: list[Any] = []
+        self.close()
+        clip_len = self.clip_end - self.clip_start
+        for rel in range(clip_len):
+            ok, frame = self.read(rel)
+            if not ok:
+                break
+            frames.append(frame)
+        return frames
+
+
+class JobFrameCache:
+    """Reuse one VideoCapture per rendered comparison; sequential reads when playing forward."""
+
+    def __init__(self, video_path: Path):
+        self.video_path = video_path
+        self._cap: cv2.VideoCapture | None = None
+        self._last_index = -1
+        self._read_lock = threading.Lock()
+
+    def _ensure_open(self) -> cv2.VideoCapture:
+        if self._cap is None or not self._cap.isOpened():
+            self._cap = cv2.VideoCapture(str(self.video_path))
+            self._last_index = -1
+        return self._cap
+
+    def close(self) -> None:
+        with self._read_lock:
+            if self._cap is not None:
+                self._cap.release()
+                self._cap = None
+            self._last_index = -1
+
+    def read(self, index: int) -> tuple[bool, Any]:
+        with self._read_lock:
+            cap = self._ensure_open()
+            if self._last_index < 0 or index < self._last_index or index > self._last_index + 3:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, index)
+            elif index > self._last_index:
+                while self._last_index < index - 1:
+                    ok, _ = cap.read()
+                    if not ok:
+                        return False, None
+                    self._last_index += 1
+            ok, frame = cap.read()
+            if not ok:
+                return False, None
+            self._last_index = index
+            return True, frame
+
+
+def get_job_frame_cache(video_path: str | Path) -> JobFrameCache:
+    key = str(_repo_path(video_path))
+    with _JOB_FRAME_CACHE_LOCK:
+        cache = _JOB_FRAME_CACHES.get(key)
+        if cache is None:
+            if len(_JOB_FRAME_CACHES) >= 3:
+                oldest = next(iter(_JOB_FRAME_CACHES))
+                _JOB_FRAME_CACHES.pop(oldest).close()
+            cache = JobFrameCache(_repo_path(video_path))
+            _JOB_FRAME_CACHES[key] = cache
+        return cache
+
+
+def get_frame_cache(scene: dict[str, Any]) -> SceneFrameCache:
+    scene_id = scene["scene_id"]
+    with _FRAME_CACHE_LOCK:
+        cache = _FRAME_CACHES.get(scene_id)
+        if cache is None:
+            cache = SceneFrameCache(scene)
+            if len(_FRAME_CACHES) >= 4:
+                oldest = next(iter(_FRAME_CACHES))
+                _FRAME_CACHES.pop(oldest).close()
+            _FRAME_CACHES[scene_id] = cache
+        return cache
+
+
+def validate_scene(scene: dict[str, Any]) -> dict[str, Any]:
+    issues: list[str] = []
+    source = _repo_path(scene["source_video"])
+    cache_path = _repo_path(scene["detection_cache"])
+    preview_path = _repo_path(scene.get("preview_video", ""))
+    split_path = _repo_path(scene.get("known_good_split", ""))
+
+    frame_count = 0
+    fps = float(scene.get("fps", 15))
+    width = height = 0
+    if not source.exists():
+        issues.append(f"Missing source video: {source}")
+    else:
+        frame_count, fps, width, height = video_metadata(source)
+        if frame_count < int(scene["clip_end"]):
+            issues.append(
+                f"Source has {frame_count} frames but clip_end={scene['clip_end']}"
+            )
+
+    if not cache_path.exists():
+        issues.append(f"Missing detection cache: {cache_path}")
+
+    preview_ready = preview_path.exists() and preview_path.stat().st_size > 1000
+    if not preview_ready:
+        issues.append(f"Missing preview video: {preview_path}")
+
+    split_ready = split_path.exists() and split_path.stat().st_size > 1000
+    if not split_ready:
+        issues.append(f"Missing known-good split: {split_path}")
+
+    cache_ok = True
+    if cache_path.exists() and width > 0 and height > 0:
+        try:
+            dets = load_detections(scene)
+            max_x = max_y = 0.0
+            for items in dets.values():
+                for det in items:
+                    max_x = max(max_x, det.bbox.x2)
+                    max_y = max(max_y, det.bbox.y2)
+            scaled_w = width * float(scene.get("scale", 1.0))
+            scaled_h = height * float(scene.get("scale", 1.0))
+            if max_x > scaled_w * 1.08 or max_y > scaled_h * 1.08:
+                issues.append(
+                    "Detection cache coordinates exceed video resolution — re-run ingest"
+                )
+                cache_ok = False
+        except Exception as exc:  # noqa: BLE001
+            issues.append(f"Could not read detection cache: {exc}")
+            cache_ok = False
+
+    ready = not any(
+        msg.startswith("Missing source") or msg.startswith("Source has") or msg.startswith("Missing detection")
+        for msg in issues
+    )
+    return {
+        "ready": ready,
+        "issues": issues,
+        "frame_count": frame_count,
+        "fps": fps,
+        "resolution": [width, height],
+        "preview_ready": preview_ready,
+        "split_ready": split_ready,
+        "cache_ok": cache_ok,
+    }
 
 
 def _repo_path(path: str | Path) -> Path:
@@ -59,17 +288,19 @@ def get_scene(scene_id: str) -> dict[str, Any]:
 
 
 def public_scene(scene: dict[str, Any]) -> dict[str, Any]:
+    validation = validate_scene(scene)
     return {
         "scene_id": scene["scene_id"],
         "name": scene["name"],
         "description": scene.get("description", ""),
-        "preview_video": f"/media/{scene['preview_video']}",
+        "preview_video": f"/media/{scene['preview_video']}" if validation["preview_ready"] else None,
         "known_good_split": f"/media/{scene['known_good_split']}",
         "recommended_frame": scene.get("recommended_frame", 0),
         "selectable_frame_range": scene.get("selectable_frame_range", [0, scene["clip_end"] - scene["clip_start"]]),
         "supported_classes": scene.get("supported_classes", [0, 1, 2, 3, 5, 7]),
         "fps": scene.get("fps", 15),
         "frames": scene["clip_end"] - scene["clip_start"],
+        **validation,
     }
 
 
@@ -84,19 +315,11 @@ def load_detections(scene: dict[str, Any]) -> dict[int, list[Detection]]:
 
 
 def read_scene_frame(scene: dict[str, Any], rel_frame: int) -> tuple[bool, Any]:
-    clip_len = scene["clip_end"] - scene["clip_start"]
-    if rel_frame < 0 or rel_frame >= clip_len:
-        return False, None
-    cap = cv2.VideoCapture(str(_repo_path(scene["source_video"])))
-    cap.set(cv2.CAP_PROP_POS_FRAMES, scene["clip_start"] + rel_frame)
-    ok, frame = cap.read()
-    cap.release()
-    if not ok:
-        return False, None
-    scale = float(scene.get("scale", 1.0))
-    if scale != 1.0:
-        frame = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-    return True, frame
+    return get_frame_cache(scene).read(rel_frame)
+
+
+def preload_scene_frames(scene: dict[str, Any]) -> list[Any]:
+    return get_frame_cache(scene).preload()
 
 
 def encode_frame_jpeg(scene_id: str, rel_frame: int) -> bytes:
@@ -105,6 +328,23 @@ def encode_frame_jpeg(scene_id: str, rel_frame: int) -> bytes:
     if not ok:
         raise ValueError("Frame is outside the scene range.")
     ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+    if not ok:
+        raise ValueError("Could not encode frame.")
+    return encoded.tobytes()
+
+
+def encode_job_frame_jpeg(job_id: str, index: int) -> bytes:
+    job = get_job(job_id)
+    if job.status != "complete" or not job.video_path:
+        raise ValueError("Render is not complete.")
+    cache_dir = Path(job.frame_cache_dir) if job.frame_cache_dir else Path(job.video_path).parent / "frames"
+    cache_path = cache_dir / f"{index:06d}.jpg"
+    if cache_path.exists():
+        return cache_path.read_bytes()
+    ok, frame = get_job_frame_cache(job.video_path).read(index)
+    if not ok:
+        raise ValueError("Frame not found.")
+    ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
     if not ok:
         raise ValueError("Could not encode frame.")
     return encoded.tobytes()
@@ -155,16 +395,11 @@ def render_selected_target(
     selection_frame: int,
     output_dir: Path,
     progress_cb: Callable[[float], None] | None = None,
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, Path]:
     scene = get_scene(scene_id)
     all_dets = load_detections(scene)
     selected_abs, selected_idx = (int(part) for part in candidate_id.split(":", 1))
-    full_frames = []
-    for i in range(scene["clip_end"] - scene["clip_start"]):
-        ok, frame = read_scene_frame(scene, i)
-        if not ok:
-            break
-        full_frames.append(frame)
+    full_frames = preload_scene_frames(scene)
     if len(full_frames) < 10:
         raise ValueError("Could not read enough frames for this scene.")
     frame_h, frame_w = full_frames[0].shape[:2]
@@ -209,6 +444,8 @@ def render_selected_target(
     engine.build(masked_dets, occluder_dets, raw_dets=raw_dets)
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    frame_cache_dir = output_dir / "frames"
+    frame_cache_dir.mkdir(parents=True, exist_ok=True)
     video_path = output_dir / f"{scene_id}_{candidate_id.replace(':', '_')}_persist_split.mp4"
     manifest_path = output_dir / f"{scene_id}_{candidate_id.replace(':', '_')}_manifest.json"
     writer = cv2.VideoWriter(
@@ -229,6 +466,7 @@ def render_selected_target(
     frame_meta: list[dict[str, Any]] = []
 
     label = class_name(clip.class_id).upper()
+    render_stats = {"exited_frames": [], "no_ghost_crowd": [], "pre_sel_no_anchor": []}
     for i, frame in enumerate(frames):
         comp = engine.step(i, masked_dets[i], occluder_dets[i])
         anchor = clip.anchor_path.get(i)
@@ -245,7 +483,18 @@ def render_selected_target(
             )
         )
         in_window = any(start <= i < end for start, end in clip.occlusion_windows)
-        in_oc = bool(anchor and not visible and in_window)
+        in_oc_window = bool(anchor and not visible and in_window)
+        in_oc_latent = bool(
+            anchor
+            and frame_is_persist_latent(
+                i, anchor, raw_dets[i], clip.occlusion_windows, target_class_id=clip.class_id
+            )
+        )
+        in_oc = in_oc_latent
+        if anchor and not visible and in_oc_latent and not in_oc_window:
+            render_stats["no_ghost_crowd"].append(i)
+        if i < clip.selected_frame and anchor is None and len(render_stats["pre_sel_no_anchor"]) < 8:
+            render_stats["pre_sel_no_anchor"].append(i)
         baseline_lost = lost_sm.update(comp.baseline_lost or in_oc)
         lumen_ghost = ghost_sm.update(comp.lumen_ghost and bool(anchor) and in_oc)
         if in_oc:
@@ -261,20 +510,37 @@ def render_selected_target(
             )
         beat = _beat_for_frame(in_oc, anchor, visible, beat_sm)
 
-        if in_oc and anchor:
+        if anchor and (in_oc or not visible):
             lumen_bb = smooth.update(anchor)
-            ghost_trail.append((int(lumen_bb.cx), int(lumen_bb.cy)))
+            lumen_ghost = True
+            if in_oc:
+                ghost_trail.append((int(lumen_bb.cx), int(lumen_bb.cy)))
+            if not lumen_visual.exit_zones and not lumen_visual.latent_badge:
+                lumen_visual = LumenVisualState(
+                    exit_zones=list(comp.lumen_visual.exit_zones),
+                    confidence=clip.confidence_by_frame.get(i, 0.55),
+                    predicted_path=clip.predicted_paths.get(i, []),
+                    latent_badge=target_state if in_oc else "HOLD",
+                )
         elif anchor and visible:
             lumen_bb = anchor
+            lumen_ghost = False
             smooth.reset(lumen_bb)
             ghost_trail.clear()
             silhouette.update_from_frame(frame, anchor)
         else:
             lumen_bb = None
+            lumen_ghost = False
             ghost_trail.clear()
 
         if not anchor and not in_oc:
             caption = "Target exited - standard detection only."
+            if len(render_stats["exited_frames"]) < 12:
+                render_stats["exited_frames"].append(i)
+        elif anchor and not visible:
+            caption = f"{target_state} - PERSIST-AI maintains target memory."
+        elif i < clip.selected_frame and anchor:
+            caption = f"LATENT - {label} identity lock active before first sighting."
         elif in_oc:
             caption = f"{target_state} - PERSIST-AI maintains target memory."
         elif clip.tracking_quality != "high":
@@ -303,6 +569,9 @@ def render_selected_target(
             layout="split",
         )
         writer.write(rendered)
+        ok, encoded = cv2.imencode(".jpg", rendered, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+        if ok:
+            (frame_cache_dir / f"{i:06d}.jpg").write_bytes(encoded.tobytes())
         frame_meta.append(
             {
                 "frame": i,
@@ -320,6 +589,21 @@ def render_selected_target(
         )
         if progress_cb:
             progress_cb((i + 1) / num)
+    _dbg(
+        "H3",
+        "interactive_demo.py:render_selected_target",
+        "render_summary",
+        {
+            "runId": "post-fix",
+            "scene_id": scene_id,
+            "candidate_id": candidate_id,
+            "selection_frame": selection_frame,
+            "selected_frame": clip.selected_frame,
+            "exited_frames_sample": render_stats["exited_frames"],
+            "window_miss_occlusion_sample": render_stats["no_ghost_crowd"][:12],
+            "pre_selection_no_anchor_sample": render_stats["pre_sel_no_anchor"],
+        },
+    )
     writer.release()
 
     save_json(
@@ -348,10 +632,11 @@ def render_selected_target(
             },
             "frames": num,
             "fps": scene.get("fps", 15),
+            "frame_cache": str(frame_cache_dir),
             "frame_meta": frame_meta,
         },
     )
-    return video_path, manifest_path
+    return video_path, manifest_path, frame_cache_dir
 
 
 def _iou(a: BBox, b: BBox) -> float:
@@ -378,7 +663,7 @@ def start_render_job(scene_id: str, candidate_id: str, selection_frame: int) -> 
             def update_progress(progress: float) -> None:
                 job.progress = round(progress, 3)
 
-            video_path, manifest_path = render_selected_target(
+            video_path, manifest_path, frame_cache_dir = render_selected_target(
                 scene_id,
                 candidate_id,
                 selection_frame,
@@ -387,6 +672,7 @@ def start_render_job(scene_id: str, candidate_id: str, selection_frame: int) -> 
             )
             job.video_path = str(video_path)
             job.manifest_path = str(manifest_path)
+            job.frame_cache_dir = str(frame_cache_dir)
             job.progress = 1.0
             job.status = "complete"
             job.message = "Complete"

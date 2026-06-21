@@ -1,4 +1,5 @@
 const sceneList = document.getElementById("scene-list");
+const rawVideo = document.getElementById("raw-video");
 const rawFrame = document.getElementById("raw-frame");
 const rawPlayBtn = document.getElementById("raw-play-btn");
 const rawScrub = document.getElementById("raw-scrub");
@@ -34,10 +35,17 @@ let currentJobId = null;
 let resultFrames = 0;
 let latestCandidates = [];
 let candidateGroups = new Map();
+let enhanceActive = false;
 
 function setStatus(text, tone = "") {
   statusEl.textContent = text;
   statusEl.dataset.tone = tone;
+}
+
+function showRawImageMode() {
+  rawVideo.classList.add("hidden");
+  rawVideo.pause();
+  rawFrame.classList.remove("hidden");
 }
 
 function setRawFrame(index) {
@@ -46,6 +54,7 @@ function setRawFrame(index) {
   const frame = Math.max(0, Math.min(max, Number(index)));
   rawScrub.value = String(frame);
   rawFrameLabel.textContent = `Frame ${frame}`;
+  showRawImageMode();
   rawFrame.src = `/api/scenes/${activeScene.scene_id}/frame?index=${frame}&t=${Date.now()}`;
 }
 
@@ -71,7 +80,7 @@ function stopResult() {
 }
 
 function toggleRawPlay() {
-  if (!activeScene) return;
+  if (!activeScene || activeScene.ready === false) return;
   if (rawTimer) {
     stopRaw();
     return;
@@ -79,7 +88,7 @@ function toggleRawPlay() {
   rawPlayBtn.textContent = "Pause";
   rawTimer = window.setInterval(() => {
     const next = Number(rawScrub.value) + 1;
-    if (next >= Number(rawScrub.max)) {
+    if (next > Number(rawScrub.max)) {
       setRawFrame(0);
     } else {
       setRawFrame(next);
@@ -94,14 +103,15 @@ function toggleResultPlay() {
     return;
   }
   resultPlayBtn.textContent = "Pause";
+  const fps = activeScene?.fps || 15;
   resultTimer = window.setInterval(() => {
     const next = Number(resultScrub.value) + 1;
-    if (next >= Number(resultScrub.max)) {
+    if (next > Number(resultScrub.max)) {
       setResultFrame(0);
     } else {
       setResultFrame(next);
     }
-  }, 1000 / 15);
+  }, 1000 / fps);
 }
 
 function resetSelection() {
@@ -113,6 +123,7 @@ function resetSelection() {
 }
 
 function hideEnhanceLayer() {
+  enhanceActive = false;
   selectionLayer.classList.add("hidden");
   candidateSvg.innerHTML = "";
   resetSelection();
@@ -122,16 +133,38 @@ function selectScene(scene) {
   activeScene = scene;
   stopRaw();
   stopResult();
+  enhanceActive = false;
   rawScrub.max = String(Math.max(0, scene.frames - 1));
   rawScrub.value = String(scene.recommended_frame || 0);
+  rawPlayBtn.disabled = scene.ready === false;
+  enhanceBtn.disabled = scene.ready === false;
   resultPanel.classList.add("hidden");
   progressWrap.classList.add("hidden");
   hideEnhanceLayer();
   setRawFrame(scene.recommended_frame || 0);
-  setStatus("Scene loaded. Click Enhance Scene when the target is visible.");
+
+  if (scene.ready === false) {
+    const hint = (scene.issues || []).join(" ");
+    setStatus(`Scene not ready. Run ingest/validate. ${hint}`, "error");
+  } else if ((scene.issues || []).length > 0) {
+    setStatus(`Scene loaded with warnings: ${scene.issues[0]}`, "warn");
+  } else {
+    setStatus("Scene loaded. Click Enhance Scene when the target is visible.");
+  }
+
   [...sceneList.children].forEach((child) => {
     child.classList.toggle("active", child.dataset.sceneId === scene.scene_id);
   });
+}
+
+function sceneBadge(scene) {
+  if (scene.ready === false) {
+    return '<span class="scene-badge error">needs ingest</span>';
+  }
+  if ((scene.issues || []).length > 0) {
+    return '<span class="scene-badge warn">warnings</span>';
+  }
+  return '<span class="scene-badge ready">ready</span>';
 }
 
 function renderScenes() {
@@ -139,9 +172,9 @@ function renderScenes() {
   scenes.forEach((scene) => {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "scene-card";
+    button.className = `scene-card${scene.ready === false ? " not-ready" : ""}`;
     button.dataset.sceneId = scene.scene_id;
-    button.innerHTML = `<strong>${scene.name}</strong><span>${scene.description}</span>`;
+    button.innerHTML = `<strong>${scene.name}</strong><span>${scene.description}</span>${sceneBadge(scene)}`;
     button.addEventListener("click", () => selectScene(scene));
     sceneList.appendChild(button);
   });
@@ -228,9 +261,9 @@ function lockCandidate(candidate) {
   targetBadge.classList.remove("hidden");
   const [x1, y1, x2, y2] = candidate.bbox.map((v) => Math.round(v));
   drawTargetPreview(candidate);
-  if (candidate.tracking_quality && candidate.tracking_quality !== "high") {
+  if (candidate.tracking_quality === "low") {
     setStatus(
-      `Target locked on ${candidate.class_name} ${candidate.id}. Tracking quality is limited - rendering with uncertainty.`,
+      `Target locked on ${candidate.class_name} ${candidate.id}. Low-confidence detection — try a clearer frame if tracking drifts.`,
       "warn",
     );
   } else {
@@ -277,9 +310,10 @@ candidateSvg.addEventListener("mouseleave", () => {
 });
 
 async function enhanceScene() {
-  if (!activeScene) return;
+  if (!activeScene || activeScene.ready === false) return;
   stopRaw();
   resetSelection();
+  enhanceActive = true;
   selectedFrame = Number(rawScrub.value || activeScene.recommended_frame || 0);
   setStatus("Enhancing scene perception...");
   selectionLayer.classList.remove("hidden");
@@ -289,6 +323,7 @@ async function enhanceScene() {
   const candidateResp = await fetch(`/api/scenes/${activeScene.scene_id}/candidates?frame=${selectedFrame}`);
   if (!candidateResp.ok) {
     setStatus("Could not analyze this frame. Try another moment.", "error");
+    selectionLayer.classList.remove("scanning");
     return;
   }
   const payload = await candidateResp.json();
@@ -358,15 +393,18 @@ async function pollJob(jobId) {
     resultScrub.max = String(Math.max(0, resultFrames - 1));
     downloadLink.href = `/api/jobs/${jobId}/video`;
     resultPanel.classList.remove("hidden");
-    setResultFrame(0);
     progressLabel.textContent = "Complete";
     const quality = manifest.tracking_quality || "high";
-    if (quality === "high") {
-      setStatus("Comparison ready. Use the result player below or download the MP4.", "ok");
+    if (quality === "low") {
+      setStatus("Comparison ready, but tracking had limited evidence. Try a clearer selection frame.", "warn");
     } else {
-      setStatus("Comparison ready with limited tracking quality. Use the result player below or download the MP4.", "warn");
+      setStatus("Comparison ready — PERSIST-AI identity lock held through occlusion. Playing result below.", "ok");
     }
     enhanceBtn.disabled = false;
+    setResultFrame(0);
+    stopResult();
+    rawPlayBtn.textContent = "Play";
+    window.setTimeout(() => toggleResultPlay(), 120);
     return;
   }
   window.setTimeout(() => pollJob(jobId), 700);
@@ -381,8 +419,20 @@ async function loadScenes() {
   const payload = await response.json();
   scenes = payload.scenes || [];
   renderScenes();
-  if (scenes[0]) selectScene(scenes[0]);
+  const firstReady = scenes.find((scene) => scene.ready !== false) || scenes[0];
+  if (firstReady) selectScene(firstReady);
 }
+
+rawFrame.onerror = () => {
+  if (!activeScene) return;
+  setStatus("Frame failed to load — check source video or run ingest.", "error");
+};
+
+resultFrame.onerror = () => {
+  if (!currentJobId) return;
+  setStatus("Result frame failed to load — re-render or download the MP4.", "error");
+  stopResult();
+};
 
 enhanceBtn.addEventListener("click", enhanceScene);
 activateBtn.addEventListener("click", activatePersist);
@@ -390,14 +440,14 @@ resetBtn.addEventListener("click", () => {
   hideEnhanceLayer();
   resultPanel.classList.add("hidden");
   progressWrap.classList.add("hidden");
-  enhanceBtn.disabled = false;
+  enhanceBtn.disabled = activeScene?.ready === false;
   setStatus("Reset. Scrub to a clear target, then click Enhance Scene.");
 });
 rawPlayBtn.addEventListener("click", toggleRawPlay);
 resultPlayBtn.addEventListener("click", toggleResultPlay);
 rawScrub.addEventListener("input", () => {
   stopRaw();
-  hideEnhanceLayer();
+  if (!enhanceActive) hideEnhanceLayer();
   setRawFrame(rawScrub.value);
 });
 resultScrub.addEventListener("input", () => {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from lumen.core.motion_model import MotionModel
@@ -13,6 +14,26 @@ from lumen.types import BBox, Detection
 
 PERSON = 0
 VEHICLES = {1, 2, 3, 5, 7}
+_DEBUG_LOG = Path("debug-6ac46f.log")
+
+
+def _dbg(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    # #region agent log
+    import json
+    import time
+
+    payload = {
+        "sessionId": "6ac46f",
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+        "runId": data.get("runId", "pre-fix"),
+    }
+    with _DEBUG_LOG.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload) + "\n")
+    # #endregion
 
 
 @dataclass
@@ -77,15 +98,15 @@ def candidate_quality(det: Detection) -> bool:
 
 def candidate_tracking_quality(det: Detection) -> str:
     if det.class_id == PERSON:
-        if det.bbox.h >= 40 and det.confidence >= 0.18:
+        if det.bbox.h >= 36 and det.confidence >= 0.14:
             return "high"
-        if det.bbox.h >= 24 and det.confidence >= 0.12:
+        if det.bbox.h >= 22 and det.confidence >= 0.10:
             return "degraded"
         return "low"
     if det.class_id in VEHICLES:
-        if det.bbox.area >= 1200 and det.confidence >= 0.18:
+        if det.bbox.area >= 900 and det.confidence >= 0.14:
             return "high"
-        if det.bbox.area >= 420 and det.confidence >= 0.12:
+        if det.bbox.area >= 360 and det.confidence >= 0.10:
             return "degraded"
         return "low"
     return "low"
@@ -322,9 +343,10 @@ def _pick_next(
         if class_id == PERSON and root_size is not None:
             rw, rh = root_size
             root_area = max(1.0, rw * rh)
-            min_w = rw * (0.58 if near_continuous_body else 0.74)
-            min_h = max(48.0 if near_continuous_body else 55.0, rh * (0.68 if near_continuous_body else 0.74))
-            min_area = root_area * (0.46 if near_continuous_body else 0.62)
+            is_small = rh < 95
+            min_w = rw * (0.50 if is_small else (0.58 if near_continuous_body else 0.74))
+            min_h = max(24.0 if is_small else (48.0 if near_continuous_body else 55.0), rh * (0.50 if is_small else (0.68 if near_continuous_body else 0.74)))
+            min_area = root_area * (0.34 if is_small else (0.46 if near_continuous_body else 0.62))
             if (
                 det.bbox.h < min_h
                 or det.bbox.w < min_w
@@ -337,15 +359,29 @@ def _pick_next(
         vec = _appearance_vector(frame, det.bbox, class_id)
         local_app = _appearance_distance(template, vec)
         root_app = _appearance_distance(root_template, vec)
+        if class_id == PERSON and root_template is not None and root_app > 0.52:
+            if iou(prev, det.bbox) <= 0.25 and not near_continuous_body:
+                continue
         if class_id == PERSON and root_template is not None and root_app > 0.64 and not near_continuous_body:
+            continue
+        if class_id == PERSON and root_template is not None and gap > 4 and root_app > 0.34:
             continue
         app = min(local_app, root_app)
         motion = _center_distance(pred, det.bbox) / (90.0 if class_id == PERSON else 180.0)
         overlap = iou(prev, det.bbox)
         size_penalty = abs(det.bbox.area - prev.area) / max(prev.area, det.bbox.area, 1.0)
+        median_step = max(8.0, prev.w * 0.55)
+        jump_penalty = max(0.0, (prev_dist - 2.5 * median_step) / max(1.0, median_step))
         if class_id == PERSON:
             continuity = prev_dist / max(1.0, _person_step_limit(prev, velocity, gap))
-            score = motion * 0.55 + continuity * 1.45 + app * 3.1 + size_penalty * 0.25 - overlap * 0.35
+            score = (
+                motion * 0.55
+                + continuity * 1.45
+                + app * 3.1
+                + size_penalty * 0.25
+                + jump_penalty * 1.8
+                - overlap * 0.35
+            )
         else:
             score = motion * 1.15 + app * 1.4 + size_penalty * 0.2 - overlap * 0.28
         scored.append((score, app, det.bbox, vec, prev_dist))
@@ -466,14 +502,141 @@ def _track_direction(
                 )
             if direction < 0:
                 velocity = (-velocity[0], -velocity[1])
-            if picked and picked[1] is not None and _appearance_distance(template, picked[1]) < 0.44:
-                template = _blend_appearance(template, picked[1])
+            if picked and picked[1] is not None:
+                root_dist = _appearance_distance(root_template, picked[1])
+                if root_dist < 0.35 and _appearance_distance(template, picked[1]) < 0.44:
+                    template = _blend_appearance(template, picked[1])
             prev_i = i
             prev_bb = match
             flow_bb = match
             flow_rel = i
             gap = 1
         i += direction
+
+
+def _bridge_anchor_gaps(path: dict[int, BBox | None], max_gap: int = 12) -> dict[int, BBox | None]:
+    """Interpolate short tracking dropouts so identity lock survives brief crowd passes."""
+    out = dict(path)
+    n = max(out.keys()) + 1 if out else 0
+    anchors = sorted(i for i in range(n) if out.get(i) is not None)
+    if len(anchors) < 2:
+        return out
+    for a, b in zip(anchors, anchors[1:]):
+        gap = b - a - 1
+        if 0 < gap <= max_gap:
+            bb_a, bb_b = out[a], out[b]
+            if bb_a is None or bb_b is None:
+                continue
+            for step in range(1, gap + 1):
+                t = step / (gap + 1)
+                cx = bb_a.cx * (1.0 - t) + bb_b.cx * t
+                cy = bb_a.cy * (1.0 - t) + bb_b.cy * t
+                w = bb_a.w * (1.0 - t) + bb_b.w * t
+                h = bb_a.h * (1.0 - t) + bb_b.h * t
+                out[a + step] = BBox(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+    return out
+
+
+def _backfill_preappearance_path(
+    path: dict[int, BBox | None],
+    clip_len: int,
+    class_id: int,
+) -> dict[int, BBox | None]:
+    """Carry the selected identity back to frame 0 before first YOLO sighting."""
+    out = dict(path)
+    anchors = sorted(i for i in range(clip_len) if out.get(i) is not None)
+    if not anchors:
+        return out
+    first = anchors[0]
+    if first <= 0:
+        return out
+    ref = out[first]
+    if ref is None:
+        return out
+    refs = anchors[: min(10, len(anchors))]
+    if len(refs) >= 2:
+        vx = sum(
+            (out[refs[j]].cx - out[refs[j - 1]].cx) / max(1, refs[j] - refs[j - 1])  # type: ignore[union-attr]
+            for j in range(1, len(refs))
+        ) / (len(refs) - 1)
+        vy = sum(
+            (out[refs[j]].cy - out[refs[j - 1]].cy) / max(1, refs[j] - refs[j - 1])  # type: ignore[union-attr]
+            for j in range(1, len(refs))
+        ) / (len(refs) - 1)
+    else:
+        vx = vy = 0.0
+    if class_id == PERSON:
+        vx = max(-10.0, min(10.0, vx))
+        vy = max(-3.0, min(3.0, vy))
+    for i in range(first - 1, -1, -1):
+        steps = first - i
+        cx = ref.cx - vx * steps
+        cy = ref.cy - vy * steps
+        out[i] = BBox(cx - ref.w / 2, cy - ref.h / 2, cx + ref.w / 2, cy + ref.h / 2)
+    return out
+
+
+def _constrain_identity_drift(
+    path: dict[int, BBox | None],
+    visible_frames: set[int],
+    root_bbox: BBox,
+    clip_len: int,
+    class_id: int,
+    occlusion_windows: list[tuple[int, int]] | None = None,
+) -> dict[int, BBox | None]:
+    """Prevent predicted anchors from sliding onto unrelated pedestrians after occlusion."""
+    out = dict(path)
+    vis_pts = sorted(i for i in range(clip_len) if i in visible_frames and out.get(i) is not None)
+    if not vis_pts:
+        return out
+    last_vis_i = vis_pts[0]
+    last_vis_bb = out[last_vis_i]
+    assert last_vis_bb is not None
+    max_jump = 0.0
+
+    windows = occlusion_windows or []
+
+    for i in range(clip_len):
+        if i in visible_frames and out.get(i) is not None:
+            bb = out[i]
+            assert bb is not None
+            in_oc = _inside_windows(i, windows)
+            step_limit = max(12.0 if in_oc else 16.0, root_bbox.w * (0.48 if in_oc else 0.68))
+            if class_id == PERSON and abs(bb.cx - last_vis_bb.cx) > step_limit:
+                out[i] = BBox(last_vis_bb.x1, last_vis_bb.y1, last_vis_bb.x2, last_vis_bb.y2)
+            else:
+                last_vis_i = i
+                last_vis_bb = out[i]
+            continue
+
+        bb = out.get(i)
+        age = max(0, i - last_vis_i)
+        if bb is None:
+            if last_vis_bb is not None and age <= 60:
+                out[i] = BBox(last_vis_bb.x1, last_vis_bb.y1, last_vis_bb.x2, last_vis_bb.y2)
+            continue
+
+        rvx, rvy, rspeed = _recent_motion_profile(out, visible_frames, last_vis_i)
+        if class_id == PERSON and rspeed < 0.55:
+            cx, cy = last_vis_bb.cx, last_vis_bb.cy
+        else:
+            cx = last_vis_bb.cx + rvx * min(age, 16)
+            cy = last_vis_bb.cy + rvy * min(age, 10)
+        corridor_x = max(22.0, root_bbox.w * (0.40 + min(age, 24) * 0.025))
+        corridor_y = max(14.0, root_bbox.h * 0.22)
+        cx = max(last_vis_bb.cx - corridor_x, min(last_vis_bb.cx + corridor_x, cx))
+        cy = max(last_vis_bb.cy - corridor_y, min(last_vis_bb.cy + corridor_y, cy))
+        max_jump = max(max_jump, abs(bb.cx - cx), abs(bb.cy - cy))
+        w, h = last_vis_bb.w, last_vis_bb.h
+        out[i] = BBox(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+
+    _dbg(
+        "H5",
+        "selectable_target.py:_constrain_identity_drift",
+        "drift_constrained",
+        {"runId": "post-fix-v2", "max_jump_px": round(max_jump, 2), "clip_len": clip_len},
+    )
+    return out
 
 
 def _extrapolate_generic(path: dict[int, BBox | None], clip_len: int, class_id: int) -> dict[int, BBox | None]:
@@ -606,6 +769,8 @@ def _build_target_memory(
             state_by_frame[i] = "EXITED"
         elif i in visible_frames:
             state_by_frame[i] = "VISIBLE"
+        elif i < selected_rel and i not in visible_frames:
+            state_by_frame[i] = "PREDICTED"
         elif _inside_windows(i, windows):
             state_by_frame[i] = "OCCLUDED" if confidence_by_frame.get(i, 0.0) >= 0.45 else "PREDICTED"
         else:
@@ -767,7 +932,10 @@ def _apply_kalman_prediction(
             cx = max(w / 2, min(frame_w - w / 2, cx))
             out[i] = BBox(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
             latent_steps += 1
-            confidence_by_frame[i] = max(0.22, 0.94 - latent_steps * 0.055)
+            if latent_steps > 12:
+                confidence_by_frame[i] = max(0.18, 0.94 - latent_steps * 0.055)
+            else:
+                confidence_by_frame[i] = max(0.22, 0.94 - latent_steps * 0.055)
         elif bb is not None:
             confidence_by_frame[i] = 0.65
 
@@ -853,7 +1021,7 @@ def build_selectable_target_clip(
     path: dict[int, BBox | None] = {i: None for i in range(clip_len)}
     path[selected_rel] = selected.bbox
     visible_frames: set[int] = {selected_rel}
-    max_gap = 12 if selected.class_id == PERSON else 8
+    max_gap = 16 if selected.class_id == PERSON else 10
     _track_direction(
         all_dets,
         path,
@@ -880,6 +1048,7 @@ def build_selectable_target_clip(
         frame_provider,
         visible_frames,
     )
+    path = _bridge_anchor_gaps(path)
 
     visible_count = sum(1 for bb in path.values() if bb is not None)
     if visible_count < min_visible_frames:
@@ -915,13 +1084,6 @@ def build_selectable_target_clip(
             path[j] = None
     visible_frames = {i for i in visible_frames if i < final_len and path.get(i) is not None}
     windows = _remove_visible_frames_from_windows(windows, visible_frames)
-    ghost_frames = sum(e - s for s, e in windows)
-    visible_ratio = len(visible_frames) / max(1, final_len)
-    min_visible_ratio = 0.45 if selected.class_id == PERSON else 0.32
-    max_ghost_frames = max(28, int(len(visible_frames) * 0.75))
-    if visible_ratio < min_visible_ratio or (windows and ghost_frames > max_ghost_frames):
-        tracking_quality = "low" if visible_ratio < min_visible_ratio * 0.5 else "degraded"
-        failure_mode = "Tracking quality is limited; rendering with uncertainty."
     (
         path,
         predicted_paths,
@@ -934,6 +1096,55 @@ def build_selectable_target_clip(
         windows,
         frame_w,
         selected.class_id,
+    )
+    path = _backfill_preappearance_path(path, final_len, selected.class_id)
+    path = _bridge_anchor_gaps(path, max_gap=16)
+    path = _constrain_identity_drift(
+        path, visible_frames, selected.bbox, final_len, selected.class_id, windows
+    )
+    ghost_frames = sum(e - s for s, e in windows)
+    visible_ratio = len(visible_frames) / max(1, final_len)
+    anchor_in_ghost = sum(
+        1 for s, e in windows for i in range(s, min(e, final_len)) if path.get(i) is not None
+    )
+    ghost_anchor_ratio = anchor_in_ghost / max(1, ghost_frames)
+    evidence_frames = len(visible_frames)
+    last_visible = max(visible_frames) if visible_frames else selected_rel
+    late_visible = sum(1 for i in visible_frames if i >= int(final_len * 0.45))
+    target_lost_early = last_visible < int(final_len * 0.55) and late_visible == 0
+    if evidence_frames < min_visible_frames:
+        tracking_quality = "low"
+        failure_mode = "Limited target evidence; rendering with prediction-only fallback."
+    elif visible_ratio < 0.20 or target_lost_early:
+        tracking_quality = "low" if visible_ratio < 0.18 or evidence_frames < min_visible_frames else "degraded"
+        failure_mode = "Limited target evidence; rendering with prediction-only fallback."
+    elif windows and ghost_frames > 0 and ghost_anchor_ratio >= 0.70 and evidence_frames >= min_visible_frames:
+        tracking_quality = "high"
+        failure_mode = None
+    elif visible_ratio < 0.30 and ghost_anchor_ratio < 0.45:
+        tracking_quality = "low" if visible_ratio < 0.18 else "degraded"
+        failure_mode = "Tracking quality is limited; rendering with uncertainty."
+    elif tracking_quality != "low" and evidence_frames >= min_visible_frames * 2:
+        tracking_quality = "high"
+        failure_mode = None
+    first_anchor = min((i for i, bb in path.items() if bb is not None), default=-1)
+    null_before_sel = sum(1 for i in range(selected_rel) if path.get(i) is None)
+    null_after_sel = [i for i in range(selected_rel, final_len) if path.get(i) is None]
+    _dbg(
+        "H2",
+        "selectable_target.py:build_selectable_target_clip",
+        "clip_path_summary",
+        {
+            "runId": "post-fix",
+            "selected_rel": selected_rel,
+            "first_anchor": first_anchor,
+            "null_before_selection": null_before_sel,
+            "null_after_selection_count": len(null_after_sel),
+            "null_after_selection_sample": null_after_sel[:12],
+            "occlusion_windows": windows,
+            "ghost_anchor_ratio": round(ghost_anchor_ratio, 3),
+            "final_len": final_len,
+        },
     )
     target_memory = _build_target_memory(
         f"{selected_abs_frame}:{selected_index}",

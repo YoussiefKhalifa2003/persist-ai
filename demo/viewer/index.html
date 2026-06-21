@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Try PERSIST-AI</title>
-  <link rel="stylesheet" href="/viewer/style.css?v=target-memory-v1" />
+  <link rel="stylesheet" href="/viewer/style.css?v=playback-v2" />
 </head>
 <body>
   <header class="topbar">
@@ -24,6 +24,7 @@
     <section class="workspace">
       <div class="stage">
         <div class="frame-player">
+          <video id="raw-video" class="raw-video hidden" playsinline muted></video>
           <img id="raw-frame" alt="Raw scene preview" />
           <div class="mini-controls">
             <button id="raw-play-btn" type="button">Play</button>
@@ -72,6 +73,6 @@
     </section>
   </main>
 
-  <script src="/viewer/viewer.js?v=target-memory-v1"></script>
+  <script src="/viewer/viewer.js?v=playback-v6"></script>
 </body>
 </html>

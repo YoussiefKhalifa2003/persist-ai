@@ -56,6 +56,18 @@ video upload is shown as a beta path but is intentionally disabled in v1.
 Curated scenes currently include:
 - Video 3: street-side vehicle occlusion and clean target exit.
 - Video 4: busy sidewalk crowd with pedestrians, bikes, foreground blockers, and edge exits.
+- Video 5 / Video 6: high-res static street scenes (ingested via YouTube).
+
+Before launching the demo, validate assets:
+
+```powershell
+python scripts/ingest_youtube_scenes.py --only 5 --overwrite
+python scripts/ingest_youtube_scenes.py --only 6 --overwrite
+python scripts/validate_interactive_scenes.py
+python scripts/run_interactive_demo.py
+```
+
+The viewer uses smooth **preview MP4** playback when available, and switches to exact JPEG frames for Enhance / click-to-lock overlays.
 
 ## Note on GPU
 

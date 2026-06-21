@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import time
+from pathlib import Path
+
 from lumen.data.pedestrian_clip_finder import (
     _person_visible,
     _vehicle_near_anchor,
@@ -11,6 +15,23 @@ from lumen.pipelines.comparison_pipeline import iou
 from lumen.types import BBox, Detection
 
 PERSON = 0
+_DEBUG_LOG = Path("debug-6ac46f.log")
+
+
+def _dbg(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    # #region agent log
+    payload = {
+        "sessionId": "6ac46f",
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+        "runId": data.get("runId", "pre-fix"),
+    }
+    with _DEBUG_LOG.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload) + "\n")
+    # #endregion
 
 
 def _target_visible(all_dets: list[Detection], anchor: BBox, target_class_id: int, thresh: float) -> bool:
@@ -190,7 +211,7 @@ def find_all_occlusion_windows(
             end = j + 1
         extended.append((s, end))
 
-    capped = [(s, min(e, s + 28)) for s, e in extended]
+    capped = [(s, min(e, s + (45 if target_class_id == PERSON else 32))) for s, e in extended]
     merged: list[tuple[int, int]] = [capped[0]]
     for start, end in capped[1:]:
         ps, pe = merged[-1]
@@ -303,13 +324,30 @@ def finalize_anchor_path(
     for j in range(n):
         if occupied[j]:
             continue
-        if last_match is not None and j > last_match:
+        if last_match is not None and j > last_match + post_exit_frames + 6:
             out[j] = None
         elif out.get(j) is not None and not _target_visible(
             all_dets.get(clip_start + j, []), out[j], target_class_id, 0.14  # type: ignore[arg-type]
         ):
+            if last_match is not None and j <= last_match + post_exit_frames:
+                continue
             # Drop stale extrapolated boxes outside occlusion (e.g. subject already left).
             out[j] = None
+
+    cleared_after_match = sum(
+        1 for j in range(n) if path.get(j) is not None and out.get(j) is None and (last_match is None or j <= last_match)
+    )
+    _dbg(
+        "H1",
+        "persist_occlusion.py:finalize_anchor_path",
+        "finalize_cleared_anchors",
+        {
+            "last_match": last_match,
+            "cleared_after_match": cleared_after_match,
+            "window_count": len(windows),
+            "clip_len_before": n,
+        },
+    )
 
     last_oc_end = max((e for _, e in windows), default=0)
     raw_tail = (last_match or 0) + post_exit_frames + raw_tail_frames

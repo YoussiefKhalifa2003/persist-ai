@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from lumen.web.interactive_demo import (
     encode_frame_jpeg,
+    encode_job_frame_jpeg,
     get_job,
     get_scene,
     load_scenes,
@@ -111,23 +112,9 @@ def create_app() -> FastAPI:
     @app.get("/api/jobs/{job_id}/frame")
     def job_frame(job_id: str, index: int = Query(0, ge=0)) -> Response:
         try:
-            job = get_job(job_id)
-        except KeyError as exc:
+            return Response(content=encode_job_frame_jpeg(job_id, index), media_type="image/jpeg")
+        except (KeyError, ValueError) as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        if job.status != "complete" or not job.video_path:
-            raise HTTPException(status_code=409, detail="Render is not complete.")
-        import cv2
-
-        cap = cv2.VideoCapture(job.video_path)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, index)
-        ok, frame = cap.read()
-        cap.release()
-        if not ok:
-            raise HTTPException(status_code=404, detail="Frame not found.")
-        ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
-        if not ok:
-            raise HTTPException(status_code=500, detail="Could not encode frame.")
-        return Response(content=encoded.tobytes(), media_type="image/jpeg")
 
     @app.get("/api/jobs/{job_id}/video")
     def job_video(job_id: str) -> FileResponse:
