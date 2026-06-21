@@ -1,9 +1,9 @@
 device: cuda:0
 detector:
-  model: yolov8m.pt
+  model: yolov8x.pt
   imgsz: 1280
-  conf: 0.25
-  iou: 0.45
+  conf: 0.12
+  iou: 0.55
   classes: [0, 2, 5, 7]
   half: true
 tracker:

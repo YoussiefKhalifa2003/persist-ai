@@ -8,7 +8,7 @@ from lumen.pipelines.comparison_pipeline import fill_gaps, find_occlusion_by_gt_
 from lumen.types import BBox, Detection
 
 PERSON = 0
-OCCLUDER_CLASSES = {2, 5, 7}  # car, bus, truck — large foreground vehicles
+OCCLUDER_CLASSES = {1, 2, 3, 5, 7}  # bicycle, car, motorcycle, bus, truck
 BUS_CLASSES = OCCLUDER_CLASSES
 
 

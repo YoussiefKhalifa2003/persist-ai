@@ -215,6 +215,7 @@ class DemoComparisonEngine:
     oc_end: int = 0
     occlusion_windows: list[tuple[int, int]] = field(default_factory=list)
     lock_until_frame: int = 0
+    target_class_id: int = 0
 
     locked_baseline_id: int | None = None
     locked_lumen_id: int | None = None
@@ -279,7 +280,7 @@ class DemoComparisonEngine:
         from lumen.pipelines.persist_occlusion import frame_is_persist_latent
 
         in_oc = frame_is_persist_latent(
-            frame_idx, anchor, masked_dets, self.occlusion_windows
+            frame_idx, anchor, masked_dets, self.occlusion_windows, target_class_id=self.target_class_id
         )
 
         l_out = self._lumen.update(masked_dets, vehicle_dets or [])

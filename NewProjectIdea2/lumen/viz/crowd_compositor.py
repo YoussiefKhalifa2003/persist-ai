@@ -19,6 +19,7 @@ from lumen.brand import BRAND
 
 TARGET_PERSIST = (0, 220, 0)
 TARGET_GHOST = (0, 255, 255)
+HUD_BG = (8, 12, 14)
 
 PERSON_CLASS = 0
 
@@ -87,16 +88,17 @@ def _draw_target_box(
             cv2.line(vis, (pt2[0], y), (pt2[0], min(y + 7, pt2[1])), color, thickness)
     else:
         cv2.rectangle(vis, pt1, pt2, color, thickness, cv2.LINE_AA)
-    cv2.putText(
-        vis,
-        label,
-        (pt1[0], max(pt1[1] - 10, 22)),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.62,
-        color,
-        2,
-        cv2.LINE_AA,
-    )
+    if label:
+        cv2.putText(
+            vis,
+            label,
+            (pt1[0], max(pt1[1] - 10, 22)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.62,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
 
 
 def _draw_raw_dets(vis: np.ndarray, dets: list[Detection]) -> None:
@@ -126,29 +128,55 @@ def _draw_confidence_bar(vis: np.ndarray, bb: BBox, confidence: float) -> None:
     cv2.rectangle(vis, (x1, y), (x1 + fill, y + 6), (0, 200, 0), -1)
 
 
-def _draw_predicted_path(vis: np.ndarray, path: list[tuple[float, float]]) -> None:
+def _draw_hud_pill(
+    vis: np.ndarray,
+    origin: tuple[int, int],
+    label: str,
+    color: tuple[int, int, int],
+) -> None:
+    x, y = origin
+    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.44, 1)
+    x = max(6, min(vis.shape[1] - tw - 24, x))
+    y = max(38, min(vis.shape[0] - 30, y))
+    cv2.rectangle(vis, (x, y), (x + tw + 18, y + 24), HUD_BG, -1, cv2.LINE_AA)
+    cv2.rectangle(vis, (x, y), (x + tw + 18, y + 24), color, 1, cv2.LINE_AA)
+    cv2.circle(vis, (x + 9, y + 12), 4, color, -1, cv2.LINE_AA)
+    cv2.putText(vis, label, (x + 16, y + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.44, color, 1, cv2.LINE_AA)
+
+
+def _draw_predicted_path(vis: np.ndarray, path: list[tuple[float, float]], confidence: float = 1.0) -> None:
     if len(path) < 2:
         return
     pts = [(int(x), int(y)) for x, y in path]
+    overlay = vis.copy()
+    conf = max(0.0, min(1.0, confidence))
+    ribbon = []
+    for i, (x, y) in enumerate(pts[:14]):
+        spread = int(4 + i * 0.9 + (1.0 - conf) * 7)
+        ribbon.append((x, y + spread))
+    for i, (x, y) in reversed(list(enumerate(pts[:14]))):
+        spread = int(4 + i * 0.9 + (1.0 - conf) * 7)
+        ribbon.append((x, y - spread))
+    if len(ribbon) >= 3:
+        cv2.fillPoly(overlay, [np.array(ribbon, dtype=np.int32)], (0, 130, 255), cv2.LINE_AA)
     for i in range(len(pts) - 1):
-        cv2.line(vis, pts[i], pts[i + 1], (0, 180, 255), 1, cv2.LINE_AA)
-        if i % 2 == 0:
-            cv2.circle(vis, pts[i], 2, (0, 180, 255), -1, cv2.LINE_AA)
+        thickness = 3 if i < 5 else 2
+        cv2.line(overlay, pts[i], pts[i + 1], (0, 230, 255), thickness, cv2.LINE_AA)
+    cv2.addWeighted(overlay, 0.42, vis, 0.58, 0, vis)
+    end = pts[min(len(pts) - 1, 9)]
+    prev = pts[max(0, min(len(pts) - 2, 8))]
+    cv2.arrowedLine(vis, prev, end, (0, 255, 255), 2, cv2.LINE_AA, tipLength=0.35)
+    vx = path[min(len(path) - 1, 6)][0] - path[0][0]
+    vy = path[min(len(path) - 1, 6)][1] - path[0][1]
+    speed = (vx * vx + vy * vy) ** 0.5 / max(1, min(len(path) - 1, 6))
+    label_xy = (max(8, min(vis.shape[1] - 120, pts[1][0] + 8)), max(42, pts[1][1] - 10))
+    _draw_hud_pill(vis, label_xy, f"PREDICTING  {int(conf * 100)}%", (0, 255, 255))
 
 
 def _draw_latent_badge(vis: np.ndarray, bb: BBox, badge: str) -> None:
     if not badge:
         return
-    cv2.putText(
-        vis,
-        badge,
-        (int(bb.x2) - 52, int(bb.y1) + 16),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
-        (0, 255, 255),
-        1,
-        cv2.LINE_AA,
-    )
+    _draw_hud_pill(vis, (int(bb.x1), max(38, int(bb.y1) - 30)), badge, (0, 255, 255))
 
 
 def _render_lumen_panel(
@@ -166,9 +194,9 @@ def _render_lumen_panel(
 ) -> np.ndarray:
     vis = frame.copy()
     ref = target_anchor or lumen_target_bb
-    for d in crowd_dets:
-        if not _is_target_det(d, ref):
-            _draw_thin_box(vis, d.bbox, GRAY, 1)
+    # The comparison side should read as target memory, not another YOLO dump.
+    # Keep nearby detections off the PERSIST-AI panel and leave raw boxes to the
+    # right panel, where the baseline behavior is easier to compare.
 
     if occluder_dets and not lumen_ghost:
         for d in occluder_dets:
@@ -184,13 +212,14 @@ def _render_lumen_panel(
             if silhouette is not None:
                 silhouette.draw_ghost(vis, lumen_target_bb, tint=(0, 220, 255), alpha=0.45)
             if lumen_visual and lumen_visual.predicted_path:
-                _draw_predicted_path(vis, lumen_visual.predicted_path)
-            _draw_target_box(vis, lumen_target_bb, TARGET_GHOST, ghost_label, dashed=True, thickness=3)
+                _draw_predicted_path(vis, lumen_visual.predicted_path, lumen_visual.confidence)
+            _draw_target_box(vis, lumen_target_bb, TARGET_GHOST, "", dashed=True, thickness=2)
             if lumen_visual:
                 _draw_confidence_bar(vis, lumen_target_bb, lumen_visual.confidence)
                 _draw_latent_badge(vis, lumen_target_bb, lumen_visual.latent_badge)
         else:
-            _draw_target_box(vis, lumen_target_bb, TARGET_PERSIST, target_label, thickness=3)
+            _draw_target_box(vis, lumen_target_bb, TARGET_PERSIST, "", thickness=3)
+            _draw_hud_pill(vis, (int(lumen_target_bb.x1), max(38, int(lumen_target_bb.y1) - 30)), "LOCKED", TARGET_PERSIST)
 
     cv2.rectangle(vis, (0, 0), (vis.shape[1], 36), (0, 0, 0), -1)
     cv2.putText(vis, BRAND, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 220, 0), 2, cv2.LINE_AA)

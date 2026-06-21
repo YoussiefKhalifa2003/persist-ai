@@ -1,0 +1,114 @@
+[
+  {
+    "scene_id": "video3-sidewalk",
+    "name": "Video 3 - Sidewalk Vehicles",
+    "description": "Street-side occlusion demo with pedestrians, cars, buses, and a clean target exit.",
+    "source_video": "data/raw/youtube/sidewalk_demo.mp4",
+    "preview_video": "results/demo_videos/VIDEO3_RAW_ONLY.mp4",
+    "known_good_split": "results/demo_videos/VIDEO3_PERSIST_SPLIT.mp4",
+    "detection_cache": "data/cache/sidewalk_demo_dets.json",
+    "output_dir": "results/interactive_jobs",
+    "clip_start": 55,
+    "clip_end": 147,
+    "scale": 0.85,
+    "fps": 15,
+    "recommended_frame": 24,
+    "selectable_frame_range": [
+      0,
+      70
+    ],
+    "supported_classes": [
+      0,
+      1,
+      2,
+      3,
+      5,
+      7
+    ]
+  },
+  {
+    "scene_id": "video4-oxford-crowd",
+    "name": "Video 4 - Busy Crowd + Bikers",
+    "description": "Dense sidewalk scene with overlapping pedestrians, bikes, foreground blockers, and crowd occlusions.",
+    "source_video": "data/raw/youtube/video4_people_bikes.mp4",
+    "preview_video": "results/demo_videos/VIDEO4_RAW_PREVIEW.mp4",
+    "known_good_split": "results/demo_videos/VIDEO4_PERSIST_SPLIT.mp4",
+    "detection_cache": "data/cache/video4_people_bikes_dets.json",
+    "output_dir": "results/interactive_jobs",
+    "clip_start": 210,
+    "clip_end": 360,
+    "scale": 1.0,
+    "fps": 15,
+    "recommended_frame": 105,
+    "selectable_frame_range": [
+      0,
+      140
+    ],
+    "supported_classes": [
+      0,
+      1,
+      2,
+      3,
+      5,
+      7
+    ]
+  },
+  {
+    "scene_id": "video5-static-street",
+    "name": "Video 5 - Static Street Scene",
+    "description": "Static-camera street scene for broad PERSIST-AI validation.",
+    "youtube_url": "https://www.youtube.com/watch?v=sz8BO2_wW0k",
+    "source_video": "data/raw/youtube/video5_static_street.mp4",
+    "preview_video": "results/demo_videos/VIDEO5_RAW_PREVIEW.mp4",
+    "known_good_split": "results/demo_videos/VIDEO5_PERSIST_SPLIT.mp4",
+    "detection_cache": "data/cache/video5_static_street_dets.json",
+    "output_dir": "results/interactive_jobs",
+    "clip_start": 0,
+    "clip_end": 375,
+    "scale": 1.0,
+    "fps": 25,
+    "recommended_frame": 187,
+    "selectable_frame_range": [
+      0,
+      374
+    ],
+    "supported_classes": [
+      0,
+      1,
+      2,
+      3,
+      5,
+      7
+    ],
+    "quality_notes": "Auto-selected 15s segment; valid targets render with confidence/uncertainty states."
+  },
+  {
+    "scene_id": "video6-static-street",
+    "name": "Video 6 - Static Street Scene",
+    "description": "Static-camera street scene for broad PERSIST-AI validation.",
+    "youtube_url": "https://www.youtube.com/watch?v=3FXUw98rrUY",
+    "source_video": "data/raw/youtube/video6_static_street.mp4",
+    "preview_video": "results/demo_videos/VIDEO6_RAW_PREVIEW.mp4",
+    "known_good_split": "results/demo_videos/VIDEO6_PERSIST_SPLIT.mp4",
+    "detection_cache": "data/cache/video6_static_street_dets.json",
+    "output_dir": "results/interactive_jobs",
+    "clip_start": 384,
+    "clip_end": 744,
+    "scale": 1.0,
+    "fps": 24,
+    "recommended_frame": 155,
+    "selectable_frame_range": [
+      0,
+      359
+    ],
+    "supported_classes": [
+      0,
+      1,
+      2,
+      3,
+      5,
+      7
+    ],
+    "quality_notes": "Auto-selected 15s segment; valid targets render with confidence/uncertainty states."
+  }
+]

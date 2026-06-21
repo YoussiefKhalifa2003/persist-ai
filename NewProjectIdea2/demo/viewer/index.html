@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Try PERSIST-AI</title>
+  <link rel="stylesheet" href="/viewer/style.css?v=target-memory-v1" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Try PERSIST-AI</h1>
+      <p>Choose a scene. Enhance perception. Select a target. Watch object permanence hold through occlusion.</p>
+    </div>
+    <button class="upload-disabled" type="button" disabled>Upload your own video - beta coming soon</button>
+  </header>
+
+  <main class="app-shell">
+    <aside class="scene-panel">
+      <div class="panel-title">Curated Scenes</div>
+      <div id="scene-list" class="scene-list"></div>
+    </aside>
+
+    <section class="workspace">
+      <div class="stage">
+        <div class="frame-player">
+          <img id="raw-frame" alt="Raw scene preview" />
+          <div class="mini-controls">
+            <button id="raw-play-btn" type="button">Play</button>
+            <input id="raw-scrub" type="range" min="0" max="0" value="0" />
+            <span id="raw-frame-label">Frame 0</span>
+          </div>
+        </div>
+        <div id="selection-layer" class="selection-layer hidden">
+          <img id="selection-frame" alt="Enhanced scene frame" />
+          <div id="scan-line" class="scan-line"></div>
+          <svg id="candidate-svg" class="candidate-svg"></svg>
+        </div>
+        <div id="target-badge" class="target-badge hidden">TARGET LOCKED</div>
+        <div id="target-preview" class="target-preview hidden">
+          <canvas id="target-preview-canvas" width="96" height="144"></canvas>
+          <span id="target-preview-label">TARGET</span>
+        </div>
+      </div>
+
+      <div class="control-strip">
+        <button id="enhance-btn" type="button">Enhance Scene</button>
+        <button id="activate-btn" type="button" disabled>Activate PERSIST-AI</button>
+        <button id="reset-btn" type="button">Reset</button>
+        <div id="status" class="status">Loading scenes...</div>
+      </div>
+
+      <div id="progress-wrap" class="progress-wrap hidden">
+        <div class="progress-track"><div id="progress-bar" class="progress-bar"></div></div>
+        <span id="progress-label">Queued</span>
+      </div>
+
+      <section id="result-panel" class="result-panel hidden">
+        <div class="result-head">
+          <span>PERSIST-AI Comparison</span>
+          <a id="download-link" href="#" download>Download MP4</a>
+        </div>
+        <div class="frame-player result-frame-player">
+          <img id="result-frame" alt="PERSIST-AI comparison frame" />
+          <div class="mini-controls">
+            <button id="result-play-btn" type="button">Play</button>
+            <input id="result-scrub" type="range" min="0" max="0" value="0" />
+            <span id="result-frame-label">Frame 0</span>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script src="/viewer/viewer.js?v=target-memory-v1"></script>
+</body>
+</html>
